@@ -2,14 +2,9 @@
 
 Video service helper script.
 
-## Video services supported
-
-- YouTube
-- Twitch
-
 ## Features
 
-Generallt, it list videos in a playlist or channel/user.
+Generally, it list videos in a playlist or channel/user.
 
     vsync <source> <options>
     vsync <video url>          # a bit pointless, however
@@ -29,6 +24,12 @@ Some examples:
     vsync youtube:nasa 'mars rover'
     vsync https://www.youtube.com/playlist?list=PL2aBZuCeDwlTxZeGRlKrWpLiX_W7jpt6p
     vsync twitch:suddendeathtv 2on2 /home/user/Videos
+
+
+## Video services supported
+
+- YouTube
+- Twitch
 
 
 ## Dependencies

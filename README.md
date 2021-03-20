@@ -16,15 +16,13 @@ Generallt, it list videos in a playlist or channel/user.
     vsync <playlist url>
     vsync <service>:<account>
 
-Where <options> might be:
+Where `<options>` might be:
 
-  -n N              Top N videos
-  
-  <any string>      Match title
-  
-  <absolute path>   Download videos to local directory.  Absolute path
-                    is used to make it possible to distinguish from
-                    <any string> variant.
+- `-n N`             Top N videos
+- `<any string>`    Match title
+- `<absolute path>` Download videos to local directory.  Absolute path
+                      is used to make it possible to distinguish from
+                      <any string> variant.
 
 Some examples:
 

@@ -1,0 +1,546 @@
+#! /usr/bin/env python3
+# -*- mode: python -*-
+
+import sys
+import json
+import re
+import os
+import io
+import time
+from os.path import commonprefix, exists as pexists, isdir, split as psplit
+from subprocess import Popen, PIPE, TimeoutExpired
+from ptyprocess import PtyProcessUnicode
+
+VERSION = '0.6.1'
+DATE = '2021-03-20'
+
+# a nice, "inconspicuous" user agent string :)
+UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36'
+
+url_prefixes = {
+	'youtube.com': 'https://youtu.be/',
+	'youtu.be': 'https://youtu.be/',
+	'twitch.tv': 'https://twitch.tv/videos/',
+}
+shorthand_expansion = {
+	'twitch': 'https://twitch.tv/%(name)s/videos',
+	'youtube': 'https://youtube.com/c/%(name)s/videos',
+}
+
+detect_site_ptn = re.compile(r'^https://(?:www\.)?(twitch\.tv|youtu\.?be|youtube\.com)/')
+is_url_ptn = re.compile(r'^(https?://|www\.)')
+is_path_ptn = re.compile(r'^/[a-z_0-9]+/[^/]+/.*')
+shorthand_url_ptn = re.compile(r'^(?P<site>twitch|youtube):(?P<name>.+)$')
+
+term_width = int(os.popen('stty size', 'r').read().split()[1])
+
+def main():
+	# try:
+	# 	pb = new_progress(200, 50, text_color=5)#, color=4, text_color=6)
+	# 	text = 'with spa ces'
+	# 	for n in range(10, 100):
+	# 		print('\r\x1b[K%s' % pb(n, text=text), end='', flush=True)
+	# 		time.sleep(0.05)
+	# 	print('\r%s' % pb(200), end='', flush=True)
+	# 	time.sleep(0.5)
+	# 	print('\r%s' % pb('working'), end='', flush=True)
+	# 	time.sleep(1.0)
+	# except KeyboardInterrupt:
+	# 	print()
+	# sys.exit(42)
+
+	synch_url = sys.argv[1]
+	synch_dir = None
+
+	search = None
+	sorting = None
+	max_count = 99999999
+	duration_limit = range(0, 99999999)
+
+	args = sys.argv[1:]
+	while args:
+		arg = args.pop(0)
+
+		if is_url_ptn.search(arg):
+			synch_url = arg
+		elif shorthand_url_ptn.search(arg):
+			m = shorthand_url_ptn.search(arg)
+			d = m.groupdict()
+			# TODO: youtube: list or video link?
+			synch_url = shorthand_expansion[d['site']] % d
+		elif is_path_ptn.search(arg):
+			synch_dir = arg
+		elif not arg.startswith('-'):
+			search = arg
+		elif arg in ('-s', '--sort'):
+			sorting = args.pop(0)
+		elif arg == '-n':
+			max_count = int(args.pop(0))
+		elif arg == '-d':
+			duration_limit = parse_duration_limit(args.pop(0))
+		elif arg == '-h':
+			print_usage()
+			sys.exit(0)
+
+	if synch_dir:
+		if pexists(synch_dir) and not isdir(synch_dir):
+			print('Target directory is a file: %s' % synch_dir, file=sys.stderr)
+			sys.exit(1)
+
+		os.makedirs(synch_dir, exist_ok=True)
+
+
+	search_arg = []
+	if search:
+		search_arg = ['--match-title', search]
+
+
+	list_all = False  # TODO: if argument '-l' is specified
+
+	def is_downloaded(url_id):
+		ptn = re.compile('-%s\.(webm|mp4|mkv)$' % url_id)
+
+		for name in os.listdir(synch_dir):
+			if ptn.search(name):
+				return True
+
+		return False
+
+	m = detect_site_ptn.search(synch_url)
+	site = m.group(1) if m else 'youtu.be'
+	url_prefix = url_prefixes[site]
+
+	# this also works if 'synch_url' is a direct video link
+	youtube_dl = Popen(['youtube-dl', '-j', '--flat-playlist', synch_url] + search_arg, stdout=PIPE, encoding='utf-8')
+
+	items = [
+		json.loads(row)
+		for row in youtube_dl.stdout
+	]
+	items = [
+		item
+		for item in items
+		if item['title'] != '[Private video]' and int(item.get('duration') or 0) in duration_limit
+	]
+
+	items = items[:max_count]
+
+	if not items:
+		print('No videos found.', file=sys.stderr)
+		sys.exit(1)
+
+	leading = ''
+	prefix = ''
+	print_prefix = False
+
+	if len(items) > 1:
+		prefix = commonprefix(list(item['title'] for item in items))
+		if prefix:
+			def print_prefix():
+				print('\x1b[1m%s\x1b[0;2m…\x1b[m' % prefix)
+			leading = '…'
+			if len(prefix) > 5:
+				leading += prefix[len(prefix)-5:]
+
+
+	downloads = []
+	already = 0
+
+	# check max length or URL
+	len_url = 0
+	for item in items:
+		video_id = item['id']
+		url = url_prefix + video_id
+		len_url = max(len(url), len_url)
+
+	url_at = term_width - len_url
+	duration_space = len('11:22:33')
+
+	if print_prefix:
+		print_prefix()
+
+	for item in items:
+		video_id = item['id']
+		url = url_prefix + video_id
+
+		is_new = False
+		if synch_dir:
+			if not is_downloaded(video_id):
+				downloads.append( (video_id, url, item['title']) )
+				is_new = True
+
+			if not is_new:
+				already += 1
+
+				if not list_all:
+					continue
+
+		name = ('%%-%ds|' % (term_width - len(leading))) % item['title'][len(prefix):][:term_width - len(leading)]
+
+		# make space below, then save cursor and restore,
+		# in case of wide characters caused line wraps (in spite of our careful truncatimg)
+		print('\n\x1b[1A\x1b[s\x1b[2m%s\x1b[m%s\x1b[u' % (leading, name), end ='')
+
+		if item.get('duration'):
+			hours = int(item['duration']//3600)
+			minutes = int((item['duration'] - hours*3600)//60)
+			seconds = int(item['duration']%60)
+
+			# add duration
+			if hours:
+				duration = '\x1b[34m%2d\x1b[0;2m:\x1b[0;34m%02d\x1b[0;2m:\x1b[0;34m%02d\x1b[0;2m' % (hours, minutes, seconds)
+			else:
+				duration = '   \x1b[34m%2d\x1b[0;2m:\x1b[0;34m%02d\x1b[0;2m' % (minutes, seconds)
+		else:
+			duration = ''
+
+		if is_new:
+			print('\r\x1b[%dC\x1b[32;1m\x1b[K NEW \x1b[m' % (url_at - 5 - duration_space), end='')
+
+
+		print(('\r\x1b[%dC\x1b[K %%s \x1b[m' % (url_at - 2 - duration_space)) % duration, end='')
+
+		# add URL
+		print(('\r\x1b[%dC\x1b[2m%%s\x1b[m' % url_at) % url, end='')
+
+		print()
+
+
+	if downloads:
+		print('\n\x1b[97;1mNew items to download: %d\x1b[m' % len(downloads))
+
+		dl_start_time = time.time()
+
+		completed = 0
+		failed = 0
+
+		for video_id, url, title in downloads:
+			print(' >>  %s...' % title)
+
+			t0 = time.time()
+
+			status = download(video_id, url, synch_dir)
+
+			# clear above line, " >>  ... "
+			print('\x1b[A\x1b[K\r', end='')
+
+			if status == 0:
+				print('\x1b[32;1m OK \x1b[m %s  \x1b[2m(in %.1fs)\x1b[m' % (title, time.time() - t0))
+				completed += 1
+			else:
+				print('\x1b[31;1mFAIL\x1b[m %s  \x1b[2mexit status: %s\x1b[m' % (title, status), file=sys.stderr)
+				failed += 1
+
+
+		print('%d download%s completed \x1b[2m(in %.1fs)\x1b[m' % (completed, 's' if completed != 1 else '', time.time() - dl_start_time), end='')
+		if already:
+			print('\x1b[2m ~ %d already downloaded\x1b[m' % already, end='')
+		if failed:
+			print(' ~ \x1b[0;33;1m%d error%s\x1b[m' % (failed, 's' if failed != 1 else ''))
+			sys.exit(1)
+
+		print()
+
+
+	elif synch_dir:
+		print('\x1b[32;1m OK \x1b[m All %d items already downloaded\x1b[m' % already)
+
+
+progress_ptn = re.compile(r'\[download\]\s+(?P<percent>\d+\.\d+)% of ~?(?P<total>\d+(\.\d+)?)(?P<total_unit>[KMG])iB ')
+unit_size = { 'G': 1<<30, 'M': 1<<20, 'K':1<<10 }
+dest_ptn = re.compile(r'\[download\] Destination: (?P<filename>.*)$')
+merging_ptn = re.compile(r'\[ffmpeg\] Merging formats ')
+note_fps_ptn = re.compile(r'\b(\d+(\.\d+)?)fps\b')
+note_bitrate_ptn = re.compile(r'\b@\s*(\d+)k\b')
+
+def download(video_id, url, directory):
+	t0 = time.time()
+
+	progbar = None
+
+	# first, get the videos formats,
+	#   so we can display more precise progress, e.g. "downloading audio"
+	#   one problem though is that there's no JSON output
+	#   the printed table of formats have unknown formatting :|
+	# TODO: show a 'probing...' progress bar during this
+	dlfmt = Popen(['youtube-dl', '-F', url], stdout=PIPE)
+	dlfmt.wait()
+	formats = parse_format_table(dlfmt.stdout.read().decode('utf-8').splitlines())
+
+	prev_dir = os.getcwd()
+
+	cmd = [
+		'youtube-dl',
+		'--limit-rate', '10M',
+		'--user-agent', UA,
+		'--no-color',
+		'--write-srt',
+		'--sub-lang', 'English,en',
+		'-f', 'bestvideo[height<=1440]+bestaudio/best',
+		url,
+	]
+
+	os.chdir(directory)
+
+	dl = PtyProcessUnicode.spawn(cmd)
+
+	os.chdir(prev_dir)
+
+	buf = ''
+	line = ''
+	filename = None
+	prog_text = None
+
+	while dl.isalive():
+		try:
+			ch = dl.read(1)
+		except EOFError:
+			# read child process status
+			dl.isalive()
+			break
+
+		if ch in ('\r', '\n'):
+			line = buf
+			buf = ''
+		else:
+			buf += ch
+
+		if line:
+			m = dest_ptn.search(line)
+			if m:
+				filename = m.group('filename')
+				wo_ext = filename[:filename.rfind('.')]
+				fmt_id = wo_ext[wo_ext.rfind(video_id) + len(video_id) + 1:]
+				if fmt_id and fmt_id[0] == 'f':
+					fmt_id = fmt_id[1:]
+					# TODO: when progress bar supports longer texts, also use "note"
+					prog_text = formats[fmt_id]['resolution']
+					note = formats[fmt_id]['note']
+					# video frame rate
+					m = note_fps_ptn.search(note)
+					if m:
+						prog_text += ' @ %s fps' % m.group(1)
+					else:
+						# audo bitrate
+						m = note_bitrate_ptn.search(note)
+						if m:
+							prog_text += ' @ %s kbit/s' % m.group(1)
+
+			m = progress_ptn.search(line)
+			if m:
+				if progbar is None:
+					total_size = float(m.group('total')) * unit_size[m.group('total_unit')]
+
+					total_width = len('%d' % (int(total_size)>>20))
+					def fmt_info(curr, total):
+						if curr is not None:
+							return f'%{total_width}s/%d MiB' % (int(curr)>>20, int(total)>>20)
+						else:
+							return f'%{total_width}s' % '-'
+
+					progbar = new_progress(total_size, 60, fmt_info=fmt_info)
+
+				percent = float(m.group('percent'))
+				size_sofar = progbar.total*percent/100.0
+
+				print('\r\x1b[K%s\r' % progbar(size_sofar, text=prog_text), end='', flush=True)
+
+			elif merging_ptn.search(line):
+				if progbar is None:
+					# create a same-width bar, just so we can show unknown progress
+					progbar = new_progress(None, 60)
+
+				print('\r\x1b[K%s\r' % progbar('Merging...'), end='', flush=True)
+
+			line = ''
+
+	# clear progress bar
+	print('\r\x1b[K\r', end='')
+
+	return dl.status
+
+
+def new_progress(total, width, color=None, bg_color=4, text_color=None, fmt_info=None):
+	#print(f'new_progress: total:{total} width:{width} bg_color:{bg_color} text_color:{text_color} fmt_info:{fmt_info}')
+
+	bar_ch = ('▏', '▎', '▍', '▌', '▋', '▊', '▉')
+
+	info_width = len(str(total))
+	if fmt_info is None:
+		def fmt_info(c, t):
+			return f'%{info_width}s/%-{info_width}s' % (c, t)
+
+	CLR = '\x1b[K'  # clear to end-of-line
+	INV = '\x1b[7m' # video inversion
+	RST = '\x1b[m'  # reset all attributes
+	DIM = '\x1b[2m' # faint/dim color
+	SAV = '\x1b[s'  # save cursor position
+	LOAD = '\x1b[u'  # restore saved cursor position
+
+
+	b0 = ''
+	b1 = RST
+	bh = f'\x1b[4{bg_color}m'
+	t0 = ''
+	t1 = b0
+
+	if color is not None:
+		b0 = f'\x1b[3{color}m'  # w/ inversion
+		bh = b0 + bh            # no inversion
+		t0 = b0
+
+	if text_color is not None:
+		if color:
+			t0 = f'\x1b[4{text_color};3{color}m'  # w/ inversion
+		else:
+			t0 = f'\x1b[4{text_color}m'           # w/ inversion
+
+	def gen(curr, text=None):
+		ltotal = total
+
+		if type(curr) is str:
+			text = curr
+			curr = None
+			ltotal = None
+
+		#print(f'new_progress.gen: curr:{curr} text:{text}')
+
+		if curr is None or ltotal is None:
+			percent = f'{DIM}%4s{RST}' % '?'
+			bar_w = width
+			info = '?'
+		else:
+			progress = curr/ltotal
+			percent = '%3.0f%%' % (100*progress)
+			bar_w = progress*width
+			info = fmt_info(curr, ltotal)
+
+		int_w = int(bar_w)
+		head = bar_ch[int((bar_w % 1)*len(bar_ch))]
+		tail_w = width - int_w - 1
+		# print('int_w:', int_w)
+
+		opt_text = ''
+		if text:
+			text_done = replace_reps(text[:int(bar_w)], ' ', '\x1b[%(n)dC')
+			text_todo = replace_reps(text[int(bar_w):], ' ', '\x1b[%(n)dC')
+
+			opt_text = ''
+			if text_done:
+				opt_text += f'{INV}{t0}{text_done}{t1}'
+			if text_todo:
+				opt_text += f'{RST}{bh}{text_todo}'
+			if opt_text:
+				opt_text += LOAD
+
+		last_bar = ''.join([
+			CLR,
+			percent, ' ',
+			# completed bar segments
+			(f'{INV}{SAV}{b0}%{int_w}s{b1}' % '') if int_w else '',
+			# the "head" sgment
+			f'{bh}{head}',
+			# remaining bar segments
+			(f'%{tail_w}s' % '') if tail_w else '',
+			LOAD,
+			opt_text,   # ends with LOAD if non-empty
+			f'\x1b[{width}C',
+			RST,
+			' ',
+			# display "info"
+			DIM, info, RST,
+		])
+		#print('BAR:', last_bar.replace('\x1b', 'Σ').replace('\r', 'ΣR').replace('Σ', '\x1b[35;1mΣ\x1b[m'))
+		return last_bar
+
+	gen.__name__ = 'progress_bar'
+	gen.__doc__ = '''Return a rendered progress bar at 'curr' (of 'total') progress.'''
+	gen.total = total
+	gen.width = width
+
+	return gen
+
+def replace_reps(s, find, repl):
+	ptn = re.compile(r'(%s+)' % find)
+
+	def replacer(m):
+		count = len(m.group(1))/len(find)
+		return repl % { 'n': count, 's': m.group(1) }
+
+	return ptn.sub(replacer, s)
+
+def parse_format_table(lines):
+	# first line dictates the column widths
+	# "format code  extension  resolution note"
+
+	while lines:
+		if lines[0].startswith('['):
+			del lines[0]
+		else:
+			break
+
+	header, lines = lines[0], lines[1:]
+
+	offsets = [header.find(column) for column in ['format code', 'extension', 'resolution', 'note']]
+
+	items = {}
+	for line in lines:
+		key = line[offsets[0]: offsets[1]].strip()
+		items[key] = {
+			'extension': line[offsets[1]: offsets[2]].strip(),
+			'resolution': line[offsets[2]: offsets[3]].strip(),
+			'note': line[offsets[3]:].strip(),
+		}
+
+	return items
+
+def parse_duration_limit(limit):
+	parts = [s.strip() for s in limit.split('-')]
+
+	try:
+		if len(parts) == 1:
+			return range(0, parse_duration(parts[0]))
+		if len(parts) == 2:
+			return range(parse_duration(parts[0] or 0), parse_duration(parts[1] or 99999999))
+
+	except ValueError:
+		pass
+
+	raise ValueError('Duration limit should be a single number (maximum) or a range: %s' % limit)
+
+duration_ptn = re.compile(r'^(?:(?P<hours>\d+)h)?(?:(?P<mins>\d+)m)?(?:(?P<secs>\d+)s)?$')
+
+def parse_duration(duration):
+	try:
+		return int(duration)
+	except:
+		pass
+
+	m = duration_ptn.search(duration)
+	if m:
+		d = m.groupdict()
+		return (int(d['hours'] or 0))*3600 + (int(d['mins'] or 0))*60 + (int(d['secs'] or 0))
+
+	raise ValueError('Duration must be [NNh][NNm][NNs] or just a number in seconds')
+
+def print_usage():
+	print('\x1b[1mUsage:\x1b[m %s <args>' % psplit(sys.argv[0])[1])
+	print('v%s  %s (c) André Jonsson' % (VERSION, DATE))
+	print()
+	print('\x1b[1mArguments are detected by appearance:\x1b[m')
+	print('  url-like            Video or playlist URL')
+	print('  absolute-path-like  Download path (and enables download)')
+	print('  -x or --xx          Option')
+	print('  anything else       Regexp or caseless substring title search')
+	print()
+	print('\x1b[1mOptions:\x1b[m')
+	print('  -n N                Max N videos to list (default all)')
+	print('  -d M-N  N-  -N      Duration range filter (min-max, min-, -max)')
+
+if __name__ == '__main__':
+	# try:
+		main()
+
+	# except KeyboardInterrupt:
+	# 	print('\r\x1b[K\r** User break', file=sys.stderr)
+	# 	sys.exit(1)

@@ -21,18 +21,17 @@ url_prefixes = {
 	'youtube.com': 'https://youtu.be/',
 	'youtu.be': 'https://youtu.be/',
 	'twitch.tv': 'https://twitch.tv/videos/',
+	'viki.com': 'https://viki.com/tv/',
 }
 shorthand_expansion = {
 	'twitch': 'https://twitch.tv/%(name)s/videos',
 	'youtube': 'https://youtube.com/c/%(name)s/videos',
 }
 
-detect_site_ptn = re.compile(r'^https://(?:www\.)?(twitch\.tv|youtu\.?be|youtube\.com)/')
+detect_site_ptn = re.compile(r'^https://(?:www\.)?(twitch\.tv|youtu\.?be|youtube\.com|viki\.com)/')
 is_url_ptn = re.compile(r'^(https?://|www\.)')
 is_path_ptn = re.compile(r'^/[a-z_0-9]+/[^/]+/.*')
 shorthand_url_ptn = re.compile(r'^(?P<site>twitch|youtube):(?P<name>.+)$')
-
-term_width = int(os.popen('stty size', 'r').read().split()[1])
 
 def main():
 	# try:
@@ -78,7 +77,7 @@ def main():
 			max_count = int(args.pop(0))
 		elif arg == '-d':
 			duration_limit = parse_duration_limit(args.pop(0))
-		elif arg == '-h':
+		elif arg in ('-h', '--help'):
 			print_usage()
 			sys.exit(0)
 
@@ -111,16 +110,21 @@ def main():
 	url_prefix = url_prefixes[site]
 
 	# this also works if 'synch_url' is a direct video link
-	youtube_dl = Popen(['youtube-dl', '-j', '--flat-playlist', synch_url] + search_arg, stdout=PIPE, encoding='utf-8')
+	youtube_dl = Popen(['youtube-dl', '--dump-json', '--flat-playlist', synch_url] + search_arg, stdout=PIPE, encoding='utf-8')
+
+	def prepare(item):
+		if 'title' not in item:
+			item['title'] = '%s.%d' % (item['playlist_title'], item['playlist_index'])
+		return item
 
 	items = [
-		json.loads(row)
+		prepare(json.loads(row))
 		for row in youtube_dl.stdout
 	]
 	items = [
 		item
 		for item in items
-		if item['title'] != '[Private video]' and int(item.get('duration') or 0) in duration_limit
+		if item.get('title') != '[Private video]' and int(item.get('duration') or 0) in duration_limit
 	]
 
 	items = items[:max_count]
@@ -146,12 +150,10 @@ def main():
 	downloads = []
 	already = 0
 
-	# check max length or URL
-	len_url = 0
-	for item in items:
-		video_id = item['id']
-		url = url_prefix + video_id
-		len_url = max(len(url), len_url)
+	# compute max length or URL
+	len_url = max(len(item['url']) for item in items)
+
+	term_width = int(os.popen('stty size', 'r').read().split()[1])
 
 	url_at = term_width - len_url
 	duration_space = len('11:22:33')
@@ -161,7 +163,7 @@ def main():
 
 	for item in items:
 		video_id = item['id']
-		url = url_prefix + video_id
+		url = item['url'] #url_prefix + video_id
 
 		is_new = False
 		if synch_dir:
@@ -195,7 +197,7 @@ def main():
 			duration = ''
 
 		if is_new:
-			print('\r\x1b[%dC\x1b[32;1m\x1b[K NEW \x1b[m' % (url_at - 5 - duration_space), end='')
+			print('\r\x1b[%dC\x1b[32;1m\x1b[KNEW  \x1b[m' % (url_at - 5 - duration_space), end='')
 
 
 		print(('\r\x1b[%dC\x1b[K %%s \x1b[m' % (url_at - 2 - duration_space)) % duration, end='')
@@ -276,6 +278,7 @@ def download(video_id, url, directory):
 		'--no-color',
 		'--write-srt',
 		'--sub-lang', 'English,en',
+		'--sub-format', 'srt',
 		'-f', 'bestvideo[height<=1440]+bestaudio/best',
 		url,
 	]
@@ -536,6 +539,7 @@ def print_usage():
 	print('\x1b[1mOptions:\x1b[m')
 	print('  -n N                Max N videos to list (default all)')
 	print('  -d M-N  N-  -N      Duration range filter (min-max, min-, -max)')
+	#print('  -s, --sort K        Sort playlist, by K')
 
 if __name__ == '__main__':
 	# try:

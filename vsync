@@ -7,12 +7,14 @@ import re
 import os
 import io
 import time
+from datetime import datetime
 from os.path import commonprefix, exists as pexists, isdir, split as psplit
 from subprocess import Popen, PIPE, TimeoutExpired
 from ptyprocess import PtyProcessUnicode
 
-VERSION = '0.6.1'
-DATE = '2021-03-20'
+
+VERSION = '0.6.2'
+DATE = '2022-11-05'
 
 # a nice, "inconspicuous" user agent string :)
 UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36'
@@ -157,6 +159,7 @@ def main():
 
 	url_at = term_width - len_url
 	duration_space = len('11:22:33')
+	time_space = len('yyyy-mm-dd hh:mm:ss')
 
 	if print_prefix:
 		print_prefix()
@@ -164,6 +167,8 @@ def main():
 	for item in items:
 		video_id = item['id']
 		url = item['url'] #url_prefix + video_id
+		if not url.startswith('http'):
+			url = url_prefix + url
 
 		is_new = False
 		if synch_dir:
@@ -180,8 +185,20 @@ def main():
 		name = ('%%-%ds|' % (term_width - len(leading))) % item['title'][len(prefix):][:term_width - len(leading)]
 
 		# make space below, then save cursor and restore,
-		# in case of wide characters caused line wraps (in spite of our careful truncatimg)
+		#   in case of line breaks caused by wide characters (in spite of our truncatimg)
 		print('\n\x1b[1A\x1b[s\x1b[2m%s\x1b[m%s\x1b[u' % (leading, name), end ='')
+
+		if item.get('epoch'):  # TODO: youtube?
+			upload_time = datetime.fromtimestamp(item.get('epoch'))
+			if datetime.now() == upload_time.date():
+				upload_time = upload_time.time()
+			upload_time = upload_time.isoformat(' ')
+
+			# TODO: format as e.g. '4 hours ago'
+			upload_time = '\x1b[34m%18s\x1b[0;2m' % upload_time
+
+		else:
+			upload_time = ''
 
 		if item.get('duration'):
 			hours = int(item['duration']//3600)
@@ -197,10 +214,10 @@ def main():
 			duration = ''
 
 		if is_new:
-			print('\r\x1b[%dC\x1b[32;1m\x1b[KNEW  \x1b[m' % (url_at - 5 - duration_space), end='')
+			print('\r\x1b[%dC\x1b[32;1m\x1b[KNEW  \x1b[m' % (url_at - 5 - duration_space - 1 - time_space), end='')
 
 
-		print(('\r\x1b[%dC\x1b[K %%s \x1b[m' % (url_at - 2 - duration_space)) % duration, end='')
+		print(('\r\x1b[%dC\x1b[K %%s %%s\x1b[m' % (url_at - 2 - duration_space - 1 - time_space)) % (upload_time, duration), end='')
 
 		# add URL
 		print(('\r\x1b[%dC\x1b[2m%%s\x1b[m' % url_at) % url, end='')

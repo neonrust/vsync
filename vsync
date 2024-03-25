@@ -100,8 +100,8 @@ def main():
 
 	list_all = False  # TODO: if argument '-l' is specified
 
-	def is_downloaded(url_id):
-		ptn = re.compile(r'\b%s\b.*?\.(webm|mp4|mkv)$' % url_id)
+	def is_downloaded(video_id):
+		ptn = re.compile(r'\[%s\]' % re.escape(video_id))
 
 		for name in os.listdir(synch_dir):
 			if ptn.search(name):

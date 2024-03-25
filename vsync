@@ -89,17 +89,19 @@ def main():
 			sys.exit(1)
 
 		os.makedirs(synch_dir, exist_ok=True)
+		print('Download to:', synch_dir)
 
 
 	search_arg = []
 	if search:
 		search_arg = ['--match-title', search]
+		print('Match title:', search)
 
 
 	list_all = False  # TODO: if argument '-l' is specified
 
 	def is_downloaded(url_id):
-		ptn = re.compile('-%s\.(webm|mp4|mkv)$' % url_id)
+		ptn = re.compile(r'\b%s\b.*?\.(webm|mp4|mkv)$' % url_id)
 
 		for name in os.listdir(synch_dir):
 			if ptn.search(name):
@@ -262,7 +264,8 @@ def main():
 		print('\x1b[32;1m OK \x1b[m All %d items already downloaded\x1b[m' % already)
 
 
-progress_ptn = re.compile(r'\[download\]\s+(?P<percent>\d+\.\d+)% of ~?(?P<total>\d+(\.\d+)?)(?P<total_unit>[KMG])iB ')
+# no '^' here, because there's an escape sequence first
+progress_ptn = re.compile(r'\[download\]\s+(?P<percent>\d+\.\d+)% of\s+~?(?P<total>\d+(\.\d+)?)(?P<total_unit>[KMG])iB ')
 unit_size = { 'G': 1<<30, 'M': 1<<20, 'K':1<<10 }
 dest_ptn = re.compile(r'\[download\] Destination: (?P<filename>.*)$')
 merging_ptn = re.compile(r'\[ffmpeg\] Merging formats ')
@@ -316,15 +319,17 @@ def download(video_id, url, directory):
 			dl.isalive()
 			break
 
-		if ch in ('\r', '\n'):
-			line = buf
-			buf = ''
-		else:
+		if ch not in ('\r', '\n'):
 			buf += ch
+			continue
+		else:
+			line = buf
+			if not line:
+				continue
+			buf = ''
 
 		if line:
-			m = dest_ptn.search(line)
-			if m:
+			if (m := dest_ptn.search(line)) is not None:
 				filename = m.group('filename')
 				wo_ext = filename[:filename.rfind('.')]
 				fmt_id = wo_ext[wo_ext.rfind(video_id) + len(video_id) + 1:]
@@ -343,8 +348,7 @@ def download(video_id, url, directory):
 						if m:
 							prog_text += ' @ %s kbit/s' % m.group(1)
 
-			m = progress_ptn.search(line)
-			if m:
+			elif (m := progress_ptn.search(line)) is not None:
 				if progbar is None:
 					total_size = float(m.group('total')) * unit_size[m.group('total_unit')]
 
@@ -556,9 +560,9 @@ def print_usage():
 	#print('  -s, --sort K        Sort playlist, by K')
 
 if __name__ == '__main__':
-	# try:
+	try:
 		main()
 
-	# except KeyboardInterrupt:
-	# 	print('\r\x1b[K\r** User break', file=sys.stderr)
-	# 	sys.exit(1)
+	except KeyboardInterrupt:
+		print('\r\x1b[K\r** User break', file=sys.stderr)
+		sys.exit(1)

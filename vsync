@@ -83,19 +83,18 @@ def main():
 			print_usage()
 			sys.exit(0)
 
+	search_arg = []
+	if search:
+		search_arg = ['--match-title', search]
+		print('  \x1b[1mMatch title:\x1b[m \x1b[34;1m%s\x1b[m' % search)
+
 	if synch_dir:
 		if pexists(synch_dir) and not isdir(synch_dir):
 			print('Target directory is a file: %s' % synch_dir, file=sys.stderr)
 			sys.exit(1)
 
 		os.makedirs(synch_dir, exist_ok=True)
-		print('Download to:', synch_dir)
-
-
-	search_arg = []
-	if search:
-		search_arg = ['--match-title', search]
-		print('Match title:', search)
+		print('  \x1b[1mDownload to:\x1b[m %s' % hl_path(synch_dir))
 
 
 	list_all = False  # TODO: if argument '-l' is specified
@@ -145,7 +144,7 @@ def main():
 		prefix = commonprefix(list(item['title'] for item in items))
 		if prefix:
 			def print_prefix():
-				print('\x1b[1m%s\x1b[0;2m…\x1b[m' % prefix)
+				print('  \x1b[1mDetected title prefix:\x1b[m "\x1b[34;1m%s\x1b[0;2m\x1b[m"' % prefix)
 			leading = '…'
 			if len(prefix) > 5:
 				leading += prefix[len(prefix)-5:]
@@ -543,6 +542,10 @@ def parse_duration(duration):
 		return (int(d['hours'] or 0))*3600 + (int(d['mins'] or 0))*60 + (int(d['secs'] or 0))
 
 	raise ValueError('Duration must be [NNh][NNm][NNs] or just a number in seconds')
+
+def hl_path(path):
+	path = path.rstrip('/') + '/'
+	return '\x1b[34;1m%s\x1b[m' % path.replace('/', '\x1b[33;1m/\x1b[34;1m')
 
 def print_usage():
 	print('\x1b[1mUsage:\x1b[m %s <args>' % psplit(sys.argv[0])[1])
